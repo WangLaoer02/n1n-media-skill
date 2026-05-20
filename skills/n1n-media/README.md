@@ -41,6 +41,8 @@ git clone https://github.com/WangLaoer02/n1n-media-skill.git \
 /Users/yue/.openclaw/media/tool-image-generation/
 ```
 
+**所有生成图片必须保存到此路径**，webchat 只认此目录下的文件作为 MEDIA 附件。
+
 ### API Keys（请替换为你的 keys）
 
 | Key | 分组 | 说明 |
@@ -76,58 +78,32 @@ https://api.n1n.ai/v1beta/models/gemini-3.1-flash-image-preview:generateContent
 | "生成图片"、"生图"、"画画"、"画图" | 文生图 |
 | "替换角色"、"改成XX"、"换个风格"（发送图片） | 图生图 |
 
-### 标准流程（Agent 必须遵循）
+### 完整工作流（Agent 必须按顺序执行）
 
-1. **取参考图**：从当前消息的 inbound 目录读取图片路径
-2. **组装请求**：用户提示词原封不动填入 `text`；参考图 base64 放 `inlineData`
-3. **发请求**：默认 key + 代理 + `--http1.1`
-4. **保存图片**：解码 response 的 `inlineData`，写入 `tool-image-generation/` 目录
-5. **汇报**：格式必须包含"模型/分组/尺寸/文件"，并附 `MEDIA:` 行
+#### 第一步：收到图片时立即保存
 
-### 请求体格式
-
-```json
-{
-  "contents": [{"parts": [
-    {"text": "<用户原始提示词>"},
-    {"inlineData": {"mimeType": "image/png", "data": "<图片base64>"}}
-  ]}],
-  "generationConfig": {
-    "responseModalities": ["TEXT", "IMAGE"],
-    "imageConfig": {"aspectRatio": "9:16"}
-  }
-}
-```
-
-### curl 调用示例
+用户发送图片后，**立即**复制到永久目录，防止 inbound 清空丢失：
 
 ```bash
-curl -s --max-time 180 \
-  -x http://127.0.0.1:26136 \
-  -X POST "https://api.n1n.ai/v1beta/models/gemini-3.1-flash-image-preview:generateContent" \
-  -H "Authorization: Bearer sk-你的key" \
-  -H "Content-Type: application/json" \
-  -d @/tmp/img_req.json \
-  -o /tmp/img_resp.json \
-  --http1.1
+cp <inbound路径> /Users/yue/.openclaw/media/tool-image-generation/n1n-ref-<timestamp>.png
 ```
 
-### 保存图片（Python）
+**⚠️ inbound 是临时目录，消息处理完会被清空，绝不能依赖后续读取！**
 
-```python
-python3 -c "
-import json, base64, time
-d = json.load(open('/tmp/img_resp.json'))
-for p in d['candidates'][0]['content']['parts']:
-    if 'inlineData' in p:
-        img = base64.b64decode(p['inlineData']['data'])
-        path = f'/Users/yue/.openclaw/media/tool-image-generation/n1n-{int(time.time())}.png'
-        open(path, 'wb').write(img)
-        print('saved', len(img), 'bytes to', path)
-"
-```
+#### 第二步：组装请求
 
-### 汇报格式模板
+- 用户提示词原封不动填入 `text`，不改写
+- 参考图 base64 直接写入请求的 `inlineData`，**不要让子 Agent 自己读文件**（子 Agent 是 isolated 模式，看不到父 session 的文件）
+
+#### 第三步：发请求
+
+默认 key + 代理 + `--http1.1`，收到 403/quota 失败时换备用 key。
+
+#### 第四步：保存结果
+
+**必须**保存到 `tool-image-generation/` 目录。
+
+#### 第五步：汇报格式
 
 ```
 🖼️ 图片生成完成
@@ -136,7 +112,43 @@ for p in d['candidates'][0]['content']['parts']:
 - 尺寸：9:16
 - 文件：<文件名>
 ```
-然后附上 `MEDIA:` 行。
+
+**然后单独一行发送 MEDIA（不要加任何前缀文字）：**
+```
+MEDIA:/Users/yue/.openclaw/media/tool-image-generation/xxx.png
+```
+
+---
+
+## ⚠️ SubAgent 图生图任务规范
+
+当需要用子 Agent 并行生成多张图时：
+
+### 正确的 task 写法
+
+```
+生成要求：保留图1的主体，将UI布局改为图2风格...
+
+参考图路径（必须是实际存在的文件）：
+- 图1主体：/Users/yue/.openclaw/media/tool-image-generation/n1n-ref-xxx.png
+- 图2 UI：/Users/yue/.openclaw/media/tool-image-generation/n1n-ref-yyy.png
+
+保存路径：/Users/yue/.openclaw/media/tool-image-generation/result.png
+```
+
+### 禁止行为
+
+- ❌ 不要让子 Agent 自己从 inbound 读图（已清空）
+- ❌ 不要让子 Agent 自己从 Downloads 找图（会乱找）
+- ❌ 不要让子 Agent 自己找参考图路径
+- ❌ 不要假设 isolated 子 Agent 能访问父 session 的任何文件
+- ❌ 不要把图片存到 `/tmp`（webchat 不认）
+
+### 正确做法
+
+- ✅ 把图片 base64 **直接内嵌在 task 里**传给子 Agent
+- ✅ 或把图片复制到 `tool-image-generation/` 后把**绝对路径**写进 task
+- ✅ 结果图片路径明确指定为 `tool-image-generation/xxx.png`
 
 ---
 
@@ -157,19 +169,12 @@ for p in d['candidates'][0]['content']['parts']:
 
 ---
 
-## 🔑 配置自己的 API Keys
-
-Skill 使用环境变量或配置文件管理 keys。要使用自己的 key，修改 SKILL.md 中的 API Keys 表格（直接写入完整 key，不要用占位符）。
-
-如需多套 key 切换，可在 Skill 内置 key 失效时自动切换，详见 SKILL.md 的错误处理级联部分。
-
----
-
 ## 📁 目录结构
 
 ```
 n1n-media/
 ├── SKILL.md            # 核心技能文件（必须）
+├── README.md           # 本文档
 └── references/          # 参考文档（可选）
     ├── control-ui-skill-copy.txt
     └── models.md
