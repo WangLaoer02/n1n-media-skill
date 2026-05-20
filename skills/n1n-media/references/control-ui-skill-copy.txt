@@ -1,0 +1,154 @@
+---
+name: n1n-media
+description: 通过 n1n API 生成图片或视频。触发条件：用户说"生成图片/生图/画画/画图/生成视频/生视频"等任何图像或视频创作指令时调用。支持 Gemini（gemini-3.1-flash-image-preview）、Grok（grok-imagine-image）、Veo、Sora 等模型。
+---
+
+# N1N Media Generator
+
+> 不自动切换模型。用户指定哪个模型就用哪个模型。
+
+## 存储路径
+
+- 图片：`/Users/yue/.openclaw/media/tool-image-generation/`
+- 视频：`/Users/yue/.openclaw/media/tool-video-generation/`
+
+## API Keys
+
+| Key | 分组 | 用途 |
+|-----|------|------|
+| `sk-C0tPF9DXyc6MZkqVXNaVR4IgMkWIl5EaP9zG6ppLme9cBj2F` | 默认 | 图片、视频 |
+| `sk-8f5bM2Pp0vfVhUCp0VlbqKIgTbleNYagbRjAAZ6maOF15nlT` | 优质Gemini | 仅 Gemini |
+
+**Base URL**：`https://api.n1n.ai`
+
+---
+
+## 🖼️ 图片生成
+
+### 汇报格式（生成后必须回复）
+
+```
+🖼️ 图片生成完成
+- 模型：<model>
+- 分组：<分组>
+- 尺寸：<尺寸>
+- 文件：<文件名>
+```
+
+然后附上 `MEDIA:` 行。
+
+### gemini-3.1-flash-image-preview
+
+**端点**：`POST https://api.n1n.ai/v1beta/models/gemini-3.1-flash-image-preview:generateContent`
+
+**请求体**（保存为文件再调用，避免 shell 转义问题）：
+```json
+{
+  "contents": [{"parts": [{"text": "<提示词>"}]}],
+  "generationConfig": {
+    "responseModalities": ["TEXT", "IMAGE"],
+    "imageConfig": {"aspectRatio": "1:1"}
+  }
+}
+```
+
+**保存图片**：
+```python
+python3 -c "
+import json, base64, time
+d = json.load(open('/tmp/img.json'))
+for p in d['candidates'][0]['content']['parts']:
+    if 'inlineData' in p:
+        img = base64.b64decode(p['inlineData']['data'])
+        path = f'/Users/yue/.openclaw/media/tool-image-generation/gemini-{int(time.time())}.png'
+        open(path, 'wb').write(img)
+        print('saved', len(img), 'bytes to', path)
+"
+```
+
+**尺寸**：aspectRatio 支持 `1:1` / `16:9` / `9:16` / `3:2` / `2:3`
+
+### grok-imagine-image
+
+**端点**：`POST https://api.n1n.ai/v1/images/generations`
+
+**请求体**：
+```json
+{"model": "grok-imagine-image", "prompt": "<提示词>", "n": 1, "size": "1024x1024"}
+```
+
+**保存图片**：
+```python
+python3 -c "
+import json, sys, time, urllib.request
+d = json.load(sys.stdin)
+url = d['data'][0]['url']
+path = f'/Users/yue/.openclaw/media/tool-image-generation/grok-{int(time.time())}.png'
+urllib.request.urlretrieve(url, path)
+print('saved:', path)
+"
+```
+
+**尺寸**：`1024x1024` / `1024x1792` / `1792x1024`
+
+---
+
+## 🎬 视频生成
+
+### 汇报格式（生成后必须回复）
+
+```
+🎬 视频生成完成
+- 模型：<model>
+- 时长：<seconds>s
+- 文件：<文件名>
+```
+
+然后附上 `MEDIA:` 行。
+
+### veo3（默认）
+
+**提交任务**：
+```bash
+curl -s -X POST "https://api.n1n.ai/v1/videos" \
+  -H "Authorization: Bearer sk-C0tPF9DXyc6MZkqVXNaVR4IgMkWIl5EaP9zG6ppLme9cBj2F" \
+  -F "model=veo3" \
+  -F "prompt=<提示词>" \
+  -F "seconds=5"
+```
+
+**轮询状态**：
+```bash
+curl -s -X GET "https://api.n1n.ai/v1/videos/<task_id>" \
+  -H "Authorization: Bearer sk-C0tPF9DXyc6MZkqVXNaVR4IgMkWIl5EaP9zG6ppLme9cBj2F"
+```
+
+返回 `status: completed` 时，`result_url` 即为视频地址。
+
+**下载**：
+```bash
+curl -L -o "/Users/yue/.openclaw/media/tool-video-generation/veo3.mp4" "<result_url>"
+```
+
+**支持时长**：4s / 5s / 6s / 8s（默认 5s）
+
+### sora-2-all（备选）
+
+**仅支持 10s 或 15s**，不能混用时长。
+
+```bash
+curl -s -X POST "https://api.n1n.ai/v1/videos" \
+  -H "Authorization: Bearer sk-C0tPF9DXyc6MZkqVXNaVR4IgMkWIl5EaP9zG6ppLme9cBj2F" \
+  -H "Content-Type: application/json" \
+  -d '{"model": "sora-2-all", "prompt": "<提示词>", "seconds": 10}'
+```
+
+---
+
+## 已知限制
+
+- **gemini-3.1-flash-image-preview 端点**：某些环境下返回 500 或超时，并非 key 问题，是服务端问题
+- **gpt-image-2**：OpenAI 上游极慢，不可用
+- **flux-schnell / dall-e-3**：上游负载饱和，不可用
+- **grok-video-3**：无可用渠道
+- **视频轮询间隔**：15~30s，避免过度请求
